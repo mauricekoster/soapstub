@@ -1,0 +1,26 @@
+# rule 1
+    .//{http://example.com/sample.wsdl}a  ^1$
++   .//{http://example.com/sample.wsdl}b  ^1$    reply/adder/2.xml
+
+# Rule 2
+.//{http://example.com/sample.wsdl}a  1
+.//{http://example.com/sample.wsdl}b  2    reply/adder/3.xml
+
+# Rule 3
+.//{http://example.com/sample.wsdl}a  2
+.//{http://example.com/sample.wsdl}b  1
+=>  reply/adder/3.xml
+
+
+# Rule 4
+.//{http://example.com/sample.wsdl}a  2
+.//{http://example.com/sample.wsdl}b  2
+=> reply/adder/4.xml
+
+# Rule Unknown
+.//{http://example.com/sample.wsdl}a  \d+
+.//{http://example.com/sample.wsdl}b  \d+
+=> reply/adder/unknown.xml
+
+
+default   reply/adder/fault.xml

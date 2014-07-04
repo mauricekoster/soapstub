@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:sam="http://example.com/sample.wsdl" xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+   <soapenv:Body>
+      <AdderResponse xmlns="sam">
+         <AddResult>3</AddResult>
+      </AdderResponse>
+   </soapenv:Body>
+</soapenv:Envelope>

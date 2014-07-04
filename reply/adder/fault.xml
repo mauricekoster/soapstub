@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:sam="http://example.com/sample.wsdl" xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+   <soapenv:Body>
+      <soapenv:Fault>
+         <faultcode>General Protection Fault</faultcode>
+         <faultstring>Something went wrong</faultstring>
+         <detail/>
+      </soapenv:Fault>
+   </soapenv:Body>
+</soapenv:Envelope>
