@@ -1,22 +1,81 @@
 #!/usr/bin/python
 from BaseHTTPServer import BaseHTTPRequestHandler,HTTPServer
-import os
+import os, glob
 from os.path import basename
 import xml.etree.ElementTree as ET
 import re, sys
 import socket
-PORT_NUMBER = 8000
+import logging
+
+PORT_NUMBER = 8989
 
 wsdlmap = {  }
 rules = {}
+rules_modified = {}
+
+
+
+
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.DEBUG)
+
+logger = logging.getLogger(__name__)
+
+
+base_dir = os.path.dirname(os.path.abspath(__file__))
+logger.info("basedir: %s" % base_dir)
+
+def sanitize_rule(rule, namespace):
+  data = rule.replace('//', '/~/')
+  pattern = re.compile(r"((?:{[^}]*}|[^/]*)*)")
+  l = pattern.split(data)[1::2]
+
+  ll = []
+  for i in l:
+    if i == '~':
+      i = ''
+    elif not i in ['','.']:
+      if i[0] != '{':
+        logger.debug("i: %s" % i)
+        i = "{%s}%s" % (namespace['default'], i)
+      else:
+        p = i.find('}')
+        if p > -1:
+          ns = i[1:p]
+          ns = ns.replace('/~/','//')
+          logger.debug("namespace: %s" % ns)
+          if ns in namespace:
+            i = "{%s}%s" % (namespace[ns], i[p+1:])
+          else:
+            i = i.replace('/~/','//')
+
+    ll.append(i)
+
+  new_rule = '/'.join(ll)
+  return new_rule
+
+def check_rule_file_modified(ruleset):
+  fn = os.path.join(base_dir, ruleset + ".rules")
+  mt = os.path.getmtime(fn)
+  if ruleset in rules_modified:
+    if mt > rules_modified[ruleset]:
+      return True
+  else:
+    return True
+
+  return False
 
 def read_rules(ruleset):
     #try:
     l = []
     current = []
+    current_namespace = {}
 
-    f = open( ruleset + ".rules", 'r')
-    print "Reading ruleset %s" % ruleset
+    fn = os.path.join(base_dir, ruleset + ".rules")
+
+    f = open( fn, 'r')
+    logger.info( "Reading ruleset '%s'" % ruleset )
+    mt = os.path.getmtime(fn)
+    rules_modified[ruleset] = mt
 
     for line in f.readlines():
       line = line.strip('\r\n')
@@ -34,23 +93,31 @@ def read_rules(ruleset):
         l.append( t )
         current = []
 
+      elif m[0] == 'namespace':
+        if len(m) == 2:
+          current_namespace['default'] = m[1]
+        else:
+          current_namespace[m[1]] = m[2]
+
       elif m[0] == '+':
+        rule = sanitize_rule(m[1], current_namespace)
+
         regexp = m[2]
         regexp = regexp.strip('^')
         regexp = regexp.strip('$')
         regexp = '^'+ regexp + '$'
         if len(m) == 3:
-            current.append( (m[1], regexp) )
+            current.append( (rule, regexp) )
 
         elif len(m) == 4:
-          current.append( (m[1], regexp) )
+          current.append( (rule, regexp) )
           t = (current, m[3])
           # got reply, rule done
           l.append(t)
           current = []
 
         else:
-          print "error in rule: ", line
+          logger.critical( "error in rule: %d" % line )
           sys.exit(1)
 
       elif m[0] == '=>':
@@ -67,15 +134,17 @@ def read_rules(ruleset):
         current = []
 
       else:
+        rule = sanitize_rule( m[0], current_namespace )
+
         regexp = m[1]
         regexp = regexp.strip('^')
         regexp = regexp.strip('$')
         regexp = '^'+ regexp + '$'
         if len(m) == 2:
-          current.append( (m[0], regexp) )
+          current.append( (rule, regexp) )
 
         elif len(m) == 3:
-          current.append( (m[0], regexp) )
+          current.append( (rule, regexp) )
           t = (current, m[2])
           # got reply, rule done
           l.append(t)
@@ -84,16 +153,35 @@ def read_rules(ruleset):
     rules[ruleset] = l
 
     f.close()
-    #except:
-    #pass
 
+    #dump_rules(ruleset)
+
+def dump_rules(ruleset):
+    print "-" * 60
+    print "Rules:"
+    idx = 0
     for r in rules[ruleset]:
-      print r
+      idx += 1
+      print "Rule %d:" % idx
+
+      if len(r) == 1:
+        print "\tdefault => %s" % r[0]
+      else:
+        partno = 0
+        for i in r[0]:
+          partno += 1
+          print "    Part no %d" % partno
+          print "\txpath : %s" % i[0]
+          print "\tregex : %s" % i[1]
+        print "    Reply : %s" % r[1]
+      print ""
+    print "-" * 60
 
 def read_wsdlmap():
-  print "Reading wsdl map"
+  logger.info("Reading wsdl map")
   try:
-    f = open('wsdl.conf','r')
+    fn = os.path.join(base_dir, 'wsdl.conf')
+    f = open(fn,'r')
     for line in f.readlines():
       line = line.strip('\r\n')
 
@@ -114,51 +202,171 @@ def read_wsdlmap():
   #print "Done"
   #print wsdlmap
 
+def preload_rulesets():
+  for f in glob.glob('*.rules'):
+    fn = f[:-6]
+    read_rules(fn)
+
 #This class will handles any incoming request from the browser
 class myHandler(BaseHTTPRequestHandler):
 
+  def send_reply(self, reply, values):
+    fn = os.path.join(base_dir, reply)
+    logger.info("Returning reply %s" % fn)
+    f = open( fn, 'r' )
+    self.send_response(200)
+    self.send_header('Content-type','text/xml')
+    self.end_headers()
+    content = f.read()
+    content = content.replace('\r\n','\n')
+    content = content.replace('\n','\r\n')
 
+    for k, v in values.items():
+      content = content.replace('{{%s}}' % k, v)
+
+    self.wfile.write(content)
+    f.close()
+
+
+  def send_wsdl_reply(self):
+    fn = os.path.join(base_dir, self.path)
+    logger.info("Returning WSDL %s" % fn)
+    f = open( fn, 'r' )
+
+    content = f.read()
+    content = content.replace('\r\n','\n')
+    server = '%s:%d' % (socket.getfqdn(), PORT_NUMBER)
+    content = content.replace('{{SERVER}}', server)
+
+    #s = os.path.getsize(fn)
+    s = len(content)
+
+    self.send_response(200)
+    self.send_header('Content-type', 'text/xml')
+    self.send_header('Content-Length', s)
+    self.end_headers()
+
+
+    self.wfile.write(content)
+    f.close()
+
+
+  def send_html_content(self, content):
+    s = len(content)
+
+    self.send_response(200)
+    self.send_header('Content-type', 'text/html')
+    self.send_header('Content-Length', s)
+    self.end_headers()
+
+    self.wfile.write(content)
+
+  def send_listing(self):
+    content = """
+    <html>
+    <body>
+      <h1>Content</h1>"""
+
+    rulelist = ""
+    for r in rules.keys():
+      rulelist += '<li><a href="%s">%s</a></li>' % ('/list/' + r, r)
+
+
+    content += """
+      <h2>Rulesets</h2>
+      %s
+      """  % rulelist
+
+
+    content += "</body></html>"
+
+    self.send_html_content(content)
+
+  def send_list_rules(self, ruleset):
+    rule_id = 0
+    content = "<html><body>"
+    content += "<h1>Ruleset <em>%s</em></h1>" % ruleset
+    content += "<table border=1>"
+    content += "<tr><th>RuleNr<th>#<th>XPath<th>RegExp</tr>"
+    for rule in rules[ ruleset ]:
+      rule_id += 1
+      row_span = 1
+
+      if len(rule) == 1:
+        content += "<tr><th rowspan=2>%d<td colspan='3'>Default rule</td></tr>" % rule_id
+        content += "<tr><th>R<td colspan=2><strong>%s</strong></tr>" % ( rule[0] )
+      else:
+        first = True
+        row_span = len(rule[0]) + 1
+        idx = 0
+        for r in rule[0]:
+          idx += 1
+          xpath = r[0]
+          regexp = r[1]
+          content += "<tr>"
+          if first:
+            first = False
+            content += "<th rowspan='%d'>%d" % (row_span, rule_id)
+          content += "<td>%d<td>%s<td>%s</tr>" % ( idx, xpath, regexp)
+        content += "<tr><th>R<td colspan=2><strong>%s</strong></tr>" % ( rule[1] )
+
+
+    content += "</table>"
+    content += "<a href='/source/%s'>Source</a> - " % ruleset
+    content += "<a href='/'>Back</a>"
+    content += "</body></html>"
+    self.send_html_content(content)
+
+  def send_source_rules(self, ruleset):
+    fn = os.path.join(base_dir, ruleset + '.rules')
+    f = open( fn, 'r' )
+    filecontent = f.read()
+    filecontent = filecontent.replace('\r\n','\n')
+    filecontent = filecontent.replace('\n','<br/>')
+    f.close()
+
+    content = "<html><body><h1>Source <em>%s</em></h1>" % ruleset
+    content += "<table border=1>"
+    content += "<tr><td><pre>%s</pre></tr>" % filecontent
+    content += "</table>"
+    content += "<a href='/list/%s'>Back</a>" % ruleset
+    content += "</body></html>"
+
+    self.send_html_content(content)
 
   def do_POST(self):
     sendReply = False
+
+    # Get request content
     l = self.headers['Content-Length']
     l = int(l)
     content = self.rfile.read(l)
-    #print content
-
-    # line = content.split('\n')[0]
-    # line = line.strip('\r\n')
-    # line = line[1:-1]
-    # print "> ", line
-    # m = line.split()
-    # ns = {}
-    # for l in m:
-    #   if l.startswith('xmlns'):
-    #     l = l[6:]
-    #     n, url = l.split('=')
-    #     ns[n] = url.strip('"')
-    #
-    # print ns
     root = ET.fromstring(content)
 
-
-
-
-    req = root.find('.//{http://schemas.xmlsoap.org/soap/envelope/}Body/[0]')
+    # Get SOAP body
+    req = root.find('.//{http://schemas.xmlsoap.org/soap/envelope/}Body')
     req = list(req)[0]
+
+    # determine the ruleset based on 1st tag found inside body
     ruleset = req.tag.split('}')[1]
 
+    # check if ruleset needs to be (re)loaded
+    if check_rule_file_modified(ruleset):
+      logger.debug("ruleset modified")
+      rules.pop(ruleset, None)
+
+    # Load ruleset if not loaded
     if not ruleset in rules:
       read_rules(ruleset)
 
     values = {}
-    print "Start matching..."
+    logger.info("Start matching using ruleset %s" % ruleset)
     rule_id = 0
     for rule in rules[ ruleset ]:
       rule_id += 1
 
       if len(rule) == 1:
-        print "MATCHED DEFAULT RULE"
+        logger.info("Matched default rule")
         reply = rule[0]
         sendReply = True
         break
@@ -175,6 +383,12 @@ class myHandler(BaseHTTPRequestHandler):
           regexp = r[1]
           idx += 1
           elem = root.find(xpath) # , namespaces=ns
+          if elem is None:
+            # xpath not found
+            logger.error( "xpath error in rule %d part %s" % (rule_id ,xpath) )
+            all_matched = False
+            break
+
           value = elem.text
           if not value:
             value = ""
@@ -188,7 +402,7 @@ class myHandler(BaseHTTPRequestHandler):
           values[idx] = value
 
         if all_matched:
-          print "MATCHED RULE '%d'. Values " % rule_id, values
+          logger.info( "Matched rule '%d'. Values: %s" % (rule_id, str(values)) )
           sendReply = True
           break
 
@@ -196,72 +410,62 @@ class myHandler(BaseHTTPRequestHandler):
 
     if sendReply == True:
       #Open the static file requested and send it
-      f = open( os.path.join(os.curdir, reply) )
-      self.send_response(200)
-      self.send_header('Content-type','text/xml')
-      self.end_headers()
-      content = f.read()
-      content = content.replace('\r\n','\n')
-      content = content.replace('\n','\r\n')
-      content = content.replace('{{VALUE}}', value)
       for k, v in values.items():
-        content = content.replace('{{%s}}' % k, v)
+        reply = reply.replace('{{%s}}' % k, v)
 
-      self.wfile.write(content)
-      f.close()
-      return
+      self.send_reply(reply, values)
+
+    else:
+      logger.info("No rules matched")
+
+      self.send_error(404,'No rules matched')
+
+
 
   #Handler for the GET requests
   def do_GET(self):
     #print basename(self.path)
 
     try:
-      #Check the file extension required and
- 	   #set the right mime type
-
-      sendReply = False
-
-
-      mimetype='text/xml'
 
       if self.path in wsdlmap:
         self.path = wsdlmap[self.path]
-        sendReply = True
+        self.send_wsdl_reply()
 
       else:
         if self.path.endswith(".wsdl") or self.path.endswith("?wsdl"):
-          sendReply = True
+          self.send_wsdl_reply()
 
-        if self.path.endswith(".xsd"):
-          sendReply = True
+        elif self.path.endswith(".xsd"):
+          self.send_wsdl_reply()
 
-      if sendReply == True:
- 	     #Open the static file requested and send it
-        f = open( os.path.join(os.curdir, self.path))
-        self.send_response(200)
-        self.send_header('Content-type',mimetype)
-        self.end_headers()
-        content = f.read()
-        content = content.replace('\r\n','\n')
-        server = '%s:%d' % (socket.getfqdn(), PORT_NUMBER)
-        content = content.replace('{{SERVER}}', server)
-        self.wfile.write(content)
-        f.close()
-        return
+        elif self.path == "/":
+          # overview
+          self.send_listing()
 
-      else:
-        self.send_error(404,'File Not Found: %s' % self.path)
+        elif self.path.startswith('/list/'):
+          ruleset = self.path[6:]
+          self.send_list_rules(ruleset)
+
+        elif self.path.startswith('/source/'):
+          ruleset = self.path[8:]
+          self.send_source_rules(ruleset)
+
+        else:
+          self.send_error(404,'URL not resolved: %s' % self.path)
 
     except IOError:
-      self.send_error(404,'File Not Found: %s' % self.path)
+      self.send_error(500,'Internal error for URL: %s' % self.path)
 
 try:
   read_wsdlmap()
+  preload_rulesets()
 
   # Create a web server and define the handler to manage the
   #incoming request
-  server = HTTPServer(('', PORT_NUMBER), myHandler)
-  print 'Started httpserver on port %s:%d' % (socket.getfqdn(), PORT_NUMBER)
+  fqdn = '' # socket.getfqdn()
+  server = HTTPServer((fqdn, PORT_NUMBER), myHandler)
+  logger.info( 'Started httpserver on %s port %d' % (fqdn or 'localhost', PORT_NUMBER) )
 
   #Wait forever for incoming htto requests
   server.serve_forever()
