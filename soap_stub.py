@@ -9,17 +9,16 @@ import logging
 
 PORT_NUMBER = 8989
 
-wsdlmap = {  }
+wsdlmap = {}
+wsdlmap_modified = None
+
 rules = {}
+variables = {}
 rules_modified = {}
 
 
-
-
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.DEBUG)
-
 logger = logging.getLogger(__name__)
-
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 logger.info("basedir: %s" % base_dir)
@@ -64,11 +63,27 @@ def check_rule_file_modified(ruleset):
 
   return False
 
+def check_wsdlmap_modified():
+  fn = os.path.join(base_dir, "wsdl.conf")
+  logger.info("check wsdl.conf: %s" % fn)
+  mt = os.path.getmtime(fn)
+
+  if wsdlmap_modified is None:
+    logger.debug("wsdl map not loaded")
+    return True
+
+  if mt > wsdlmap_modified:
+    logger.debug("wsdl map changed")
+    return True
+
+  return False
+
 def read_rules(ruleset):
     #try:
     l = []
     current = []
     current_namespace = {}
+    current_variables = {}
 
     fn = os.path.join(base_dir, ruleset + ".rules")
 
@@ -98,6 +113,10 @@ def read_rules(ruleset):
           current_namespace['default'] = m[1]
         else:
           current_namespace[m[1]] = m[2]
+
+      elif m[0] == 'variable':
+        rule = sanitize_rule( m[2], current_namespace )
+        current_variables[m[1]] = rule
 
       elif m[0] == '+':
         rule = sanitize_rule(m[1], current_namespace)
@@ -151,7 +170,7 @@ def read_rules(ruleset):
           current = []
 
     rules[ruleset] = l
-
+    variables[ruleset] = current_variables
     f.close()
 
     #dump_rules(ruleset)
@@ -179,8 +198,16 @@ def dump_rules(ruleset):
 
 def read_wsdlmap():
   logger.info("Reading wsdl map")
+  global wsdlmap
+  global wsdlmap_modified
+  wsdlmap = {}
+
   try:
     fn = os.path.join(base_dir, 'wsdl.conf')
+    mt = os.path.getmtime(fn)
+    wsdlmap_modified = mt
+    #logger.debug(mt)
+
     f = open(fn,'r')
     for line in f.readlines():
       line = line.strip('\r\n')
@@ -195,10 +222,14 @@ def read_wsdlmap():
 
       wsdlmap[ m[0] ] = m[1].strip('\n')
 
+    #logger.debug('+++')
     f.close()
+
+
   except:
     pass
 
+  #logger.debug('..done..')
   #print "Done"
   #print wsdlmap
 
@@ -232,14 +263,18 @@ class myHandler(BaseHTTPRequestHandler):
     fn = os.path.join(base_dir, self.path)
     logger.info("Returning WSDL %s" % fn)
     f = open( fn, 'r' )
-
+    #logger.debug('file opened')
     content = f.read()
+    #print content
+
     content = content.replace('\r\n','\n')
     server = '%s:%d' % (socket.getfqdn(), PORT_NUMBER)
     content = content.replace('{{SERVER}}', server)
 
     #s = os.path.getsize(fn)
+    #print "wsdl file-size: %d" % s
     s = len(content)
+    #print "wsdl file-size: %d" % s
 
     self.send_response(200)
     self.send_header('Content-type', 'text/xml')
@@ -264,19 +299,28 @@ class myHandler(BaseHTTPRequestHandler):
   def send_listing(self):
     content = """
     <html>
-    <body>
-      <h1>Content</h1>"""
+    <body>"""
+
+    content += "<h1>Content</h1>"
+
+    content += "<h2>WSDL list</h2><ul>"
+    wsdllist = ""
+    for w in wsdlmap.keys():
+      wsdllist += '<li><a href="%s">%s</a></li>' % (w, w)
+
+    content += wsdllist
+    content += "</ul>"
 
     rulelist = ""
     for r in rules.keys():
       rulelist += '<li><a href="%s">%s</a></li>' % ('/list/' + r, r)
 
-
     content += """
       <h2>Rulesets</h2>
+      <ul>
       %s
+      </ul>
       """  % rulelist
-
 
     content += "</body></html>"
 
@@ -343,8 +387,14 @@ class myHandler(BaseHTTPRequestHandler):
     content = self.rfile.read(l)
     root = ET.fromstring(content)
 
-    # Get SOAP body
+    # Get SOAP body (SOAP 1.1)
     req = root.find('.//{http://schemas.xmlsoap.org/soap/envelope/}Body')
+
+    if req is None:
+      # Try SOAP 1.2:
+      logger.info( "SOAP 1.2 request detected" )
+      req = root.find('.//{http://www.w3.org/2003/05/soap-envelope}Body')
+
     req = list(req)[0]
 
     # determine the ruleset based on 1st tag found inside body
@@ -360,8 +410,19 @@ class myHandler(BaseHTTPRequestHandler):
       read_rules(ruleset)
 
     values = {}
+    variable_values = {}
     logger.info("Start matching using ruleset %s" % ruleset)
     rule_id = 0
+
+    for varname, xpath in variables[ ruleset ].items():
+      # print "variables:"
+      # print "%s => %s" % (varname, xpath)
+      elem = root.find(xpath) # , namespaces=ns
+      if elem is None:
+        logger.warning("variable '%s' not found on xpath: %s" % (varname, xpath))
+      else:
+        variable_values[varname] = elem.text
+
     for rule in rules[ ruleset ]:
       rule_id += 1
 
@@ -376,7 +437,7 @@ class myHandler(BaseHTTPRequestHandler):
         reply = rule[1]
         all_matched = True
         l = rule[0]
-        values = {}
+        values = variable_values.copy()
         idx = 0
         for r in l:
           xpath = r[0]
@@ -428,6 +489,9 @@ class myHandler(BaseHTTPRequestHandler):
 
     try:
 
+      if check_wsdlmap_modified():
+        read_wsdlmap()
+
       if self.path in wsdlmap:
         self.path = wsdlmap[self.path]
         self.send_wsdl_reply()
@@ -456,6 +520,9 @@ class myHandler(BaseHTTPRequestHandler):
 
     except IOError:
       self.send_error(500,'Internal error for URL: %s' % self.path)
+
+    except:
+      logger.error('huh?')
 
 try:
   read_wsdlmap()
