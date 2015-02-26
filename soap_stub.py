@@ -7,6 +7,18 @@ import re, sys
 import socket
 import logging
 
+import argparse
+
+# === Configuration ========================================================================
+argparser = argparse.ArgumentParser()
+argparser.add_argument("--dir", help="Base directory.")
+args = argparser.parse_args()
+
+if args.dir:
+    base_dir = os.path.normpath(args.dir)
+else:
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
 PORT_NUMBER = 8989
 
 wsdlmap = {}
@@ -16,11 +28,12 @@ rules = {}
 variables = {}
 rules_modified = {}
 
+# store last request of ruleset, enabling to retrieve it to check its content
+last_requests = {}
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-base_dir = os.path.dirname(os.path.abspath(__file__))
 logger.info("basedir: %s" % base_dir)
 
 def sanitize_rule(rule, namespace):
@@ -197,7 +210,7 @@ def dump_rules(ruleset):
     print "-" * 60
 
 def read_wsdlmap():
-  logger.info("Reading wsdl map")
+  logger.info("Reading wsdl map from %s" % base_dir)
   global wsdlmap
   global wsdlmap_modified
   wsdlmap = {}
@@ -241,8 +254,23 @@ def preload_rulesets():
 #This class will handles any incoming request from the browser
 class myHandler(BaseHTTPRequestHandler):
 
+  def send_last_request(self, ruleset):
+    if ruleset in last_requests:
+      content = last_requests[ruleset]
+    else:
+      content = ""
+
+    s = len(content)
+    self.send_response(200)
+    self.send_header('Content-type','text/xml')
+    self.send_header('Content-Length', s)
+    self.end_headers()
+
+    self.wfile.write(content)
+
   def send_reply(self, reply, values):
-    fn = os.path.join(base_dir, reply)
+    r = reply.replace('/', os.sep)
+    fn = os.path.join(base_dir, r)
     logger.info("Returning reply %s" % fn)
     f = open( fn, 'r' )
     self.send_response(200)
@@ -260,10 +288,17 @@ class myHandler(BaseHTTPRequestHandler):
 
 
   def send_wsdl_reply(self):
-    fn = os.path.join(base_dir, self.path)
+    #logger.debug('Enter send_wsdl_reply')
+    r = self.path.replace('/', os.sep)
+    #logger.debug("Basedir: %s Reply %s -> %s" % (base_dir,self.path,r))
+    fn = os.path.join(base_dir, r)
     logger.info("Returning WSDL %s" % fn)
     f = open( fn, 'r' )
     #logger.debug('file opened')
+
+    #s = os.path.getsize(fn)
+    #logger.debug("wsdl file-size: %d" % s)
+
     content = f.read()
     #print content
 
@@ -271,10 +306,9 @@ class myHandler(BaseHTTPRequestHandler):
     server = '%s:%d' % (socket.getfqdn(), PORT_NUMBER)
     content = content.replace('{{SERVER}}', server)
 
-    #s = os.path.getsize(fn)
-    #print "wsdl file-size: %d" % s
+
     s = len(content)
-    #print "wsdl file-size: %d" % s
+    print "wsdl file-size: %d" % s
 
     self.send_response(200)
     self.send_header('Content-type', 'text/xml')
@@ -400,6 +434,9 @@ class myHandler(BaseHTTPRequestHandler):
     # determine the ruleset based on 1st tag found inside body
     ruleset = req.tag.split('}')[1]
 
+    # Store last request
+    last_requests[ruleset] = content
+
     # check if ruleset needs to be (re)loaded
     if check_rule_file_modified(ruleset):
       logger.debug("ruleset modified")
@@ -492,11 +529,14 @@ class myHandler(BaseHTTPRequestHandler):
       if check_wsdlmap_modified():
         read_wsdlmap()
 
+      #logger.debug('request: %s' % self.path)
       if self.path in wsdlmap:
         self.path = wsdlmap[self.path]
+        #logger.debug('in map')
         self.send_wsdl_reply()
 
       else:
+        #logger.debug('from file')
         if self.path.endswith(".wsdl") or self.path.endswith("?wsdl"):
           self.send_wsdl_reply()
 
@@ -510,6 +550,10 @@ class myHandler(BaseHTTPRequestHandler):
         elif self.path.startswith('/list/'):
           ruleset = self.path[6:]
           self.send_list_rules(ruleset)
+
+        elif self.path.startswith('/last/'):
+          ruleset = self.path[6:]
+          self.send_last_request(ruleset)
 
         elif self.path.startswith('/source/'):
           ruleset = self.path[8:]
