@@ -1,5 +1,5 @@
 #!/usr/bin/python
-from BaseHTTPServer import BaseHTTPRequestHandler,HTTPServer
+from http.server import BaseHTTPRequestHandler,HTTPServer
 import os, glob
 from os.path import basename
 import xml.etree.ElementTree as ET
@@ -189,25 +189,25 @@ def read_rules(ruleset):
     #dump_rules(ruleset)
 
 def dump_rules(ruleset):
-    print "-" * 60
-    print "Rules:"
+    print("-" * 60)
+    print("Rules:")
     idx = 0
     for r in rules[ruleset]:
       idx += 1
-      print "Rule %d:" % idx
+      print("Rule %d:" % idx)
 
       if len(r) == 1:
-        print "\tdefault => %s" % r[0]
+        print("\tdefault => %s" % r[0])
       else:
         partno = 0
         for i in r[0]:
           partno += 1
-          print "    Part no %d" % partno
-          print "\txpath : %s" % i[0]
-          print "\tregex : %s" % i[1]
-        print "    Reply : %s" % r[1]
-      print ""
-    print "-" * 60
+          print("    Part no %d" % partno)
+          print("\txpath : %s" % i[0])
+          print("\tregex : %s" % i[1])
+        print("    Reply : %s" % r[1])
+      print("")
+    print("-" * 60)
 
 def read_wsdlmap():
   logger.info("Reading wsdl map from %s" % base_dir)
@@ -273,18 +273,20 @@ class myHandler(BaseHTTPRequestHandler):
     fn = os.path.join(base_dir, r)
     logger.info("Returning reply %s" % fn)
     f = open( fn, 'r' )
-    self.send_response(200)
-    self.send_header('Content-type','text/xml')
-    self.end_headers()
     content = f.read()
     content = content.replace('\r\n','\n')
     content = content.replace('\n','\r\n')
 
     for k, v in values.items():
-      content = content.replace('{{%s}}' % k, v)
-
-    self.wfile.write(content)
+        content = content.replace('{{%s}}' % k, v)
     f.close()
+
+    body = content.encode('UTF-8','replace')
+    self.send_response(200)
+    self.send_header('Content-type','text/xml')
+    self.end_headers()
+
+    self.wfile.write(body)
 
 
   def send_wsdl_reply(self):
@@ -305,30 +307,28 @@ class myHandler(BaseHTTPRequestHandler):
     content = content.replace('\r\n','\n')
     server = '%s:%d' % (socket.getfqdn(), PORT_NUMBER)
     content = content.replace('{{SERVER}}', server)
-
-
-    s = len(content)
-    print "wsdl file-size: %d" % s
+    body = content.encode('UTF-8','replace')
 
     self.send_response(200)
     self.send_header('Content-type', 'text/xml')
-    self.send_header('Content-Length', s)
+    self.send_header('Content-Length', int(len(body)))
     self.end_headers()
 
 
-    self.wfile.write(content)
+    self.wfile.write(body)
     f.close()
 
 
   def send_html_content(self, content):
-    s = len(content)
 
+    body = content.encode('UTF-8','replace')
     self.send_response(200)
     self.send_header('Content-type', 'text/html')
-    self.send_header('Content-Length', s)
+    self.send_header('Content-Length', int(len(body)))
     self.end_headers()
-
-    self.wfile.write(content)
+    logger.debug(content)
+    self.wfile.write(body)
+    logger.debug('hiero')
 
   def send_listing(self):
     content = """
@@ -347,7 +347,7 @@ class myHandler(BaseHTTPRequestHandler):
 
     rulelist = ""
     for r in rules.keys():
-      rulelist += '<li><a href="%s">%s</a></li>' % ('/list/' + r, r)
+      rulelist += '<li>%s <a href="%s">list</a> <a href=%s>last</a></li>' % (r, '/list/' + r, '/last/' + r)
 
     content += """
       <h2>Rulesets</h2>
@@ -545,6 +545,7 @@ class myHandler(BaseHTTPRequestHandler):
 
         elif self.path == "/":
           # overview
+          logger.info('send listing')
           self.send_listing()
 
         elif self.path.startswith('/list/'):
@@ -582,6 +583,6 @@ try:
   server.serve_forever()
 
 except KeyboardInterrupt:
-  print '^C received, shutting down the web server'
+  print('^C received, shutting down the web server')
 
   server.socket.close()
