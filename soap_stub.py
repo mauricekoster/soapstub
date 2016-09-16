@@ -102,8 +102,10 @@ def read_rules(ruleset):
 
     f = open( fn, 'r')
     logger.info( "Reading ruleset '%s'" % ruleset )
+    rnm = os.path.basename(ruleset)
+
     mt = os.path.getmtime(fn)
-    rules_modified[ruleset] = mt
+    rules_modified[rnm] = mt
 
     for line in f.readlines():
       line = line.strip('\r\n')
@@ -182,8 +184,8 @@ def read_rules(ruleset):
           l.append(t)
           current = []
 
-    rules[ruleset] = l
-    variables[ruleset] = current_variables
+    rules[rnm] = l
+    variables[rnm] = current_variables
     f.close()
 
     #dump_rules(ruleset)
@@ -244,19 +246,20 @@ def read_wsdlmap():
 
   #logger.debug('..done..')
   #print "Done"
-  #print wsdlmap
+  #print(wsdlmap)
 
 def preload_rulesets():
-  for f in glob.glob('*.rules'):
+  fn = os.path.join(base_dir, '*.rules')
+  for f in glob.glob(fn):
     fn = f[:-6]
     read_rules(fn)
 
 #This class will handles any incoming request from the browser
 class myHandler(BaseHTTPRequestHandler):
 
-  def send_last_request(self, ruleset):
+  def send_last_request(self, ruleset, idx=-1):
     if ruleset in last_requests:
-      content = last_requests[ruleset]
+      content = last_requests[ruleset][idx]
     else:
       content = ""
 
@@ -435,7 +438,10 @@ class myHandler(BaseHTTPRequestHandler):
     ruleset = req.tag.split('}')[1]
 
     # Store last request
-    last_requests[ruleset] = content
+    if ruleset in last_requests:
+      last_requests[ruleset].append(content)
+    else:
+      last_requests[ruleset] = [content]
 
     # check if ruleset needs to be (re)loaded
     if check_rule_file_modified(ruleset):
@@ -555,6 +561,21 @@ class myHandler(BaseHTTPRequestHandler):
         elif self.path.startswith('/last/'):
           ruleset = self.path[6:]
           self.send_last_request(ruleset)
+
+        elif self.path.startswith('/history/'):
+          s = self.path.split('/')
+          ruleset = s[2]
+          idx = s[3]
+          logger.debug(s)
+          self.send_last_request(ruleset, int(idx))
+
+        elif self.path.startswith('/clear/'):
+          s = self.path.split('/')
+          ruleset = s[2]
+          logger.debug('clear: %s' % ruleset)
+          if ruleset:
+            del last_requests[ruleset]
+          self.send_html_content('<p>History cleared for %s <a href="/">back</a></p>' % ruleset)
 
         elif self.path.startswith('/source/'):
           ruleset = self.path[8:]
